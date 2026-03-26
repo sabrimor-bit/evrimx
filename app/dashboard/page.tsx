@@ -98,13 +98,20 @@ export default function Dashboard() {
 
   const addTask = async () => {
     if (!newTitle.trim() || !activeWeekId) return;
-    const priority = newIsNew ? "NEW" : newPriority;
+    // YENİ işaretliyse öncelik ne olursa olsun note'a [YENİ] ekle
+    // Sadece YENİ işaretli ama öncelik seçilmemişse priority = NEW
+    // YENİ + öncelik seçilmişse priority = seçilen, note = [YENİ]
+    const priority = newIsNew && newPriority === "P1" && !newPriority ? "NEW" : newPriority;
+    const note = newIsNew ? "[YENİ]" : "";
+    const finalPriority = newIsNew && newPriority ? newPriority : (newIsNew ? "NEW" : newPriority);
+
     const { data } = await supabase.from("tasks").insert({
       week_id: activeWeekId, user_id: userId,
-      title: newTitle.trim(), priority, status: "Baslamadi", note: "",
+      title: newTitle.trim(), priority: finalPriority, status: "Baslamadi", note,
     }).select().single();
     if (data) setTasks(t => [...t, data]);
     setNewTitle("");
+    setNewIsNew(false);
   };
 
   const updateStatus = async (id: string, status: Status) => {
@@ -362,22 +369,20 @@ export default function Dashboard() {
                   className="flex-1 bg-gray-800 border border-gray-700 focus:border-indigo-500 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none transition" />
                 <button onClick={addTask} className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-5 text-sm font-medium transition">Ekle</button>
               </div>
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
+              <div className="flex items-center gap-4 flex-wrap">
+                <div className="flex gap-2">
+                  {(["P1","P2","P3"] as Priority[]).map(p => (
+                    <button key={p} onClick={() => setNewPriority(p)}
+                      className={`text-xs px-2.5 py-1 rounded-lg border transition ${newPriority === p ? PRIORITY_CFG[p].badge : "border-gray-700 text-gray-500 hover:text-gray-300"}`}>
+                      {p}
+                    </button>
+                  ))}
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer ml-2">
                   <input type="checkbox" checked={newIsNew} onChange={e => setNewIsNew(e.target.checked)}
                     className="w-3.5 h-3.5 accent-indigo-500" />
                   <span className="text-xs text-gray-400">Hafta içi eklenen (YENİ)</span>
                 </label>
-                {!newIsNew && (
-                  <div className="flex gap-2">
-                    {(["P1","P2","P3"] as Priority[]).map(p => (
-                      <button key={p} onClick={() => setNewPriority(p)}
-                        className={`text-xs px-2.5 py-1 rounded-lg border transition ${newPriority === p ? PRIORITY_CFG[p].badge + " border-opacity-100" : "border-gray-700 text-gray-500 hover:text-gray-300"}`}>
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
           </div>
