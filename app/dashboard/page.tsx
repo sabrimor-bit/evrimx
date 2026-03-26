@@ -1,8 +1,8 @@
 "use client";
-import { useEffect, useState, useRef } from "react";
 import { createClient } from "@/lib/supabase";
-import { Task, Week, DailyLog, Priority, Status } from "@/lib/types";
+import { DailyLog, Priority, Status, Task, Week } from "@/lib/types";
 import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
 const PRIORITY_CFG: Record<string, { label: string; dot: string; badge: string }> = {
   P1: { label: "Kesinlikle bitir",   dot: "bg-red-500",     badge: "bg-red-950 text-red-300 border-red-800"         },
@@ -516,7 +516,7 @@ export default function Dashboard() {
                 <p className="text-xs text-gray-600 text-center mt-2">
                   Devret seçili {nextTasks.filter(t=>t.action==="devret").length} görev sonraki haftaya taşınacak.
                   {nextTasks.filter(t=>t.action==="askiya").length > 0 && ` ${nextTasks.filter(t=>t.action==="askiya").length} görev askıya alınacak.`}
-                </text>
+                </p>
               </div>
             )}
           </div>
