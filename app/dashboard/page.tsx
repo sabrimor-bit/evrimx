@@ -2,9 +2,9 @@
 import { createClient } from "@/lib/supabase";
 import { DailyLog, Priority, Status, Task, Week } from "@/lib/types";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-const PRIORITY_CFG: Record<Priority, { label: string; dot: string; badge: string }> = {
+const PRIORITY_CFG: Record<string, { label: string; dot: string; badge: string }> = {
   P1: { label: "Kesinlikle bitir",   dot: "bg-red-500",     badge: "bg-red-950 text-red-300 border-red-800"         },
   P2: { label: "Önemli ilerleme",    dot: "bg-amber-400",   badge: "bg-amber-950 text-amber-300 border-amber-800"   },
   P3: { label: "Yaparsan iyi olur",  dot: "bg-emerald-500", badge: "bg-emerald-950 text-emerald-300 border-emerald-800" },
@@ -51,8 +51,10 @@ export default function Dashboard() {
   const [view, setView] = useState<"tasks"|"daily"|"summary">("tasks");
   const [newTitle, setNewTitle] = useState("");
   const [newPriority, setNewPriority] = useState<Priority>("P1");
+  const [newIsNew, setNewIsNew] = useState(false);
   const [logText, setLogText] = useState("");
   const [loading, setLoading] = useState(true);
+  const logRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -85,11 +87,21 @@ export default function Dashboard() {
     supabase.from("daily_logs").select("*").eq("week_id", activeWeekId).order("created_at", { ascending: false }).then(({ data }) => setLogs(data || []));
   }, [activeWeekId]);
 
+  // Textarea otomatik büyüme
+  const handleLogChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setLogText(e.target.value);
+    if (logRef.current) {
+      logRef.current.style.height = "auto";
+      logRef.current.style.height = logRef.current.scrollHeight + "px";
+    }
+  };
+
   const addTask = async () => {
     if (!newTitle.trim() || !activeWeekId) return;
+    const priority = newIsNew ? "NEW" : newPriority;
     const { data } = await supabase.from("tasks").insert({
       week_id: activeWeekId, user_id: userId,
-      title: newTitle.trim(), priority: newPriority, status: "Baslamadi", note: "",
+      title: newTitle.trim(), priority, status: "Baslamadi", note: "",
     }).select().single();
     if (data) setTasks(t => [...t, data]);
     setNewTitle("");
@@ -98,6 +110,11 @@ export default function Dashboard() {
   const updateStatus = async (id: string, status: Status) => {
     await supabase.from("tasks").update({ status }).eq("id", id);
     setTasks(t => t.map(x => x.id === id ? { ...x, status } : x));
+  };
+
+  const updatePriority = async (id: string, priority: string) => {
+    await supabase.from("tasks").update({ priority }).eq("id", id);
+    setTasks(t => t.map(x => x.id === id ? { ...x, priority: priority as Priority } : x));
   };
 
   const deleteTask = async (id: string) => {
@@ -112,6 +129,7 @@ export default function Dashboard() {
     }).select().single();
     if (data) setLogs(l => [data, ...l]);
     setLogText("");
+    if (logRef.current) logRef.current.style.height = "96px";
   };
 
   const newWeek = async () => {
@@ -119,6 +137,30 @@ export default function Dashboard() {
       user_id: userId, label: weekLabel(), start_date: mondayOf(),
     }).select().single();
     if (data) { setWeeks(w => [data, ...w]); setActiveWeekId(data.id); }
+  };
+
+  // Devir: NEW görevler seçilen önceliğe taşınır
+  const carryOver = async () => {
+    if (!activeWeekId) return;
+    const incomplete = tasks.filter(t => t.status !== "Tamamlandi");
+    const { data: newWeekData } = await supabase.from("weeks").insert({
+      user_id: userId, label: weekLabel(), start_date: mondayOf(),
+    }).select().single();
+    if (!newWeekData) return;
+
+    for (const t of incomplete) {
+      await supabase.from("tasks").insert({
+        week_id: newWeekData.id,
+        user_id: userId,
+        title: t.title,
+        priority: t.priority, // NEW olan da kendi önceliğiyle geçer
+        status: "Baslamadi",
+        note: t.note ? `[Devir] ${t.note}` : "[Devir]",
+      });
+    }
+    setWeeks(w => [newWeekData, ...w]);
+    setActiveWeekId(newWeekData.id);
+    setTasks([]);
   };
 
   const buildSummary = () => {
@@ -136,8 +178,8 @@ export default function Dashboard() {
     return lines.join("\n");
   };
 
-  const sendToCliq = async () => {
-    await fetch("/api/cliq-notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: buildSummary() }) });
+  const sendToCliq = async (message: string) => {
+    await fetch("/api/cliq-notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message }) });
     alert("Cliq'e gönderildi!");
   };
 
@@ -164,7 +206,8 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => router.push("/team")} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition">Ekip</button>
-            <button onClick={newWeek} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition">Yeni Hafta</button>
+            <button onClick={carryOver} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition">Devret + Yeni Hafta</button>
+            <button onClick={newWeek} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition">Boş Yeni Hafta</button>
             <button onClick={() => supabase.auth.signOut().then(() => router.push("/"))} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-500 hover:text-gray-300 transition">Çıkış</button>
           </div>
         </div>
@@ -221,7 +264,7 @@ export default function Dashboard() {
         {/* GÖREVLER */}
         {view === "tasks" && (
           <div>
-            {(["P1","P2","P3","NEW"] as Priority[]).map(p => {
+            {(["P1","P2","P3","NEW"]).map(p => {
               const cfg = PRIORITY_CFG[p];
               const pts = tasks.filter(t => t.priority === p);
               return (
@@ -241,6 +284,16 @@ export default function Dashboard() {
                           <p className={`text-sm font-medium ${t.status === "Tamamlandi" ? "line-through text-gray-600" : "text-gray-100"}`}>{t.title}</p>
                           {t.note && <p className="text-xs text-gray-500 mt-0.5">{t.note}</p>}
                         </div>
+                        {/* NEW görevler için öncelik değiştirme */}
+                        {t.priority === "NEW" && (
+                          <select value={t.priority} onChange={e => updatePriority(t.id, e.target.value)}
+                            className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer bg-indigo-950 text-indigo-300">
+                            <option value="NEW">YENİ</option>
+                            <option value="P1">P1</option>
+                            <option value="P2">P2</option>
+                            <option value="P3">P3</option>
+                          </select>
+                        )}
                         <select value={t.status} onChange={e => updateStatus(t.id, e.target.value as Status)}
                           className={`text-xs px-2.5 py-1 rounded-lg border-0 outline-none cursor-pointer ${scfg.cls}`}>
                           {Object.entries(STATUS_CFG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
@@ -252,15 +305,32 @@ export default function Dashboard() {
                 </div>
               );
             })}
-            <div className="flex gap-2 mt-4">
-              <input value={newTitle} onChange={e => setNewTitle(e.target.value)} onKeyDown={e => e.key === "Enter" && addTask()}
-                placeholder="Yeni görev ekle..."
-                className="flex-1 bg-gray-900 border border-gray-700 focus:border-indigo-500 rounded-xl px-4 py-2.5 text-sm text-gray-100 placeholder-gray-600 outline-none transition" />
-              <select value={newPriority} onChange={e => setNewPriority(e.target.value as Priority)}
-                className="bg-gray-900 border border-gray-700 rounded-xl px-3 text-sm text-gray-300 outline-none">
-                <option>P1</option><option>P2</option><option>P3</option><option value="NEW">Yeni</option>
-              </select>
-              <button onClick={addTask} className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl px-5 text-sm font-medium transition">Ekle</button>
+
+            {/* Görev ekle */}
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 mt-4">
+              <div className="flex gap-2 mb-3">
+                <input value={newTitle} onChange={e => setNewTitle(e.target.value)} onKeyDown={e => e.key === "Enter" && addTask()}
+                  placeholder="Yeni görev ekle..."
+                  className="flex-1 bg-gray-800 border border-gray-700 focus:border-indigo-500 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none transition" />
+                <button onClick={addTask} className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-5 text-sm font-medium transition">Ekle</button>
+              </div>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={newIsNew} onChange={e => setNewIsNew(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-indigo-500" />
+                  <span className="text-xs text-gray-400">Hafta içi eklenen (YENİ)</span>
+                </label>
+                {!newIsNew && (
+                  <div className="flex gap-2">
+                    {(["P1","P2","P3"] as Priority[]).map(p => (
+                      <button key={p} onClick={() => setNewPriority(p)}
+                        className={`text-xs px-2.5 py-1 rounded-lg border transition ${newPriority === p ? PRIORITY_CFG[p].badge + " border-opacity-100" : "border-gray-700 text-gray-500 hover:text-gray-300"}`}>
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -268,11 +338,25 @@ export default function Dashboard() {
         {/* GÜNLÜK LOG */}
         {view === "daily" && (
           <div>
-            <div className="flex gap-3 mb-6">
-              <textarea value={logText} onChange={e => setLogText(e.target.value)}
+            <div className="mb-6">
+              <textarea
+                ref={logRef}
+                value={logText}
+                onChange={handleLogChange}
                 placeholder="Bugün ne yaptın? Yarın ne planlıyorsun?..."
-                className="flex-1 bg-gray-900 border border-gray-700 focus:border-indigo-500 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-600 outline-none resize-none h-24 transition" />
-              <button onClick={addLog} className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl px-5 text-sm font-medium self-end py-3 transition">Kaydet</button>
+                className="w-full bg-gray-900 border border-gray-700 focus:border-indigo-500 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-600 outline-none resize-none transition overflow-hidden"
+                style={{ minHeight: "96px" }}
+              />
+              <div className="flex gap-3 mt-3">
+                <button onClick={addLog}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl px-5 py-2.5 text-sm font-medium transition">
+                  Kaydet
+                </button>
+                <button onClick={() => sendToCliq(logText)}
+                  className="border border-gray-700 hover:border-gray-600 text-gray-400 hover:text-gray-200 rounded-xl px-5 py-2.5 text-sm transition">
+                  Cliq'e Gönder
+                </button>
+              </div>
             </div>
             {logs.length === 0 && <p className="text-sm text-gray-700 italic">Henüz log yok</p>}
             {logs.map(log => (
@@ -295,7 +379,7 @@ export default function Dashboard() {
                 className="flex-1 border border-gray-700 hover:border-gray-600 text-gray-400 hover:text-gray-200 rounded-xl py-3 text-sm transition">
                 Kopyala
               </button>
-              <button onClick={sendToCliq}
+              <button onClick={() => sendToCliq(buildSummary())}
                 className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl py-3 text-sm font-medium transition">
                 Cliq'e Gönder
               </button>
