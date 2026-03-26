@@ -113,8 +113,12 @@ export default function Dashboard() {
   };
 
   const updatePriority = async (id: string, priority: string) => {
-    await supabase.from("tasks").update({ priority }).eq("id", id);
-    setTasks(t => t.map(x => x.id === id ? { ...x, priority: priority as Priority } : x));
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    // Öncelik atanınca YENİ etiketini note'a ekle, priority'yi güncelle
+    const note = task.note?.includes("[YENİ]") ? task.note : (task.note ? task.note + " [YENİ]" : "[YENİ]");
+    await supabase.from("tasks").update({ priority, note }).eq("id", id);
+    setTasks(t => t.map(x => x.id === id ? { ...x, priority: priority as Priority, note } : x));
   };
 
   const deleteTask = async (id: string) => {
@@ -149,13 +153,16 @@ export default function Dashboard() {
     if (!newWeekData) return;
 
     for (const t of incomplete) {
+      // YENİ etiketini kaldır, öncelik atanmamışsa P3 yap
+      const cleanNote = (t.note || "").replace("[YENİ]","").trim();
+      const priority = t.priority === "NEW" ? "P3" : t.priority;
       await supabase.from("tasks").insert({
         week_id: newWeekData.id,
         user_id: userId,
         title: t.title,
-        priority: t.priority, // NEW olan da kendi önceliğiyle geçer
+        priority,
         status: "Baslamadi",
-        note: t.note ? `[Devir] ${t.note}` : "[Devir]",
+        note: cleanNote ? `[Devir] ${cleanNote}` : "[Devir]",
       });
     }
     setWeeks(w => [newWeekData, ...w]);
@@ -165,16 +172,49 @@ export default function Dashboard() {
 
   const buildSummary = () => {
     const lines: string[] = ["Selamlar,", "", `Bu haftanın planları (${weeks.find(w => w.id === activeWeekId)?.label}):`, ""];
+
+    // Planlı görevler (NEW olmayanlar)
     (["P1","P2","P3"] as Priority[]).forEach(p => {
-      tasks.filter(t => t.priority === p).forEach(t => {
+      tasks.filter(t => t.priority === p && !t.note?.includes("[YENİ]")).forEach(t => {
         const s = t.status === "Tamamlandi" ? "TAMAMLANDI" : STATUS_CFG[t.status].label;
         lines.push(`${t.priority} - ${t.title} (${s}${t.note ? " - " + t.note : ""})`);
       });
     });
+
+    // Hafta içi eklenen NEW görevler — durum bilgisiyle
     const newT = tasks.filter(t => t.priority === "NEW");
-    if (newT.length) { lines.push("", "Hafta içi eklenen:"); newT.forEach(t => lines.push(`YENİ - ${t.title}`)); }
+    // Ayrıca öncelik atanmış ama YENİ etiketli görevler
+    const newTagged = tasks.filter(t => t.priority !== "NEW" && t.note?.includes("[YENİ]"));
+    const allNew = [...newT, ...newTagged];
+
+    if (allNew.length) {
+      lines.push("", "Hafta içi eklenen:");
+      allNew.forEach(t => {
+        const s = t.status === "Tamamlandi" ? "TAMAMLANDI" : STATUS_CFG[t.status].label;
+        lines.push(`YENİ - ${t.title} (${s})`);
+      });
+    }
+
+    // Haftaya: tamamlanmamışlar — NEW olanlar artık öncelik ile listelenir
     const incomplete = tasks.filter(t => t.status !== "Tamamlandi");
-    if (incomplete.length) { lines.push("", "Haftaya:"); incomplete.forEach(t => lines.push(`${t.priority} - ${t.title}`)); }
+    if (incomplete.length) {
+      lines.push("", "Haftaya:");
+      (["P1","P2","P3"] as Priority[]).forEach(p => {
+        // Normal görevler
+        incomplete.filter(t => t.priority === p && !t.note?.includes("[YENİ]")).forEach(t => {
+          lines.push(`${p} - ${t.title}`);
+        });
+        // YENİ etiketliler ama bu öncelikte olanlar
+        incomplete.filter(t => t.priority === p && t.note?.includes("[YENİ]")).forEach(t => {
+          lines.push(`${p} - ${t.title}`);
+        });
+      });
+      // Öncelik atanmamış NEW'ler
+      incomplete.filter(t => t.priority === "NEW").forEach(t => {
+        lines.push(`NEW - ${t.title}`);
+      });
+    }
+
     return lines.join("\n");
   };
 
@@ -281,8 +321,16 @@ export default function Dashboard() {
                       <div key={t.id} className="group flex items-center gap-3 bg-gray-900 hover:bg-gray-800 border border-gray-800 hover:border-gray-700 rounded-xl px-4 py-3 mb-2 transition">
                         <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.dot} ${t.status === "Tamamlandi" ? "opacity-30" : ""}`} />
                         <div className="flex-1 min-w-0">
-                          <p className={`text-sm font-medium ${t.status === "Tamamlandi" ? "line-through text-gray-600" : "text-gray-100"}`}>{t.title}</p>
-                          {t.note && <p className="text-xs text-gray-500 mt-0.5">{t.note}</p>}
+                          <div className="flex items-center gap-2">
+                            <p className={`text-sm font-medium ${t.status === "Tamamlandi" ? "line-through text-gray-600" : "text-gray-100"}`}>{t.title}</p>
+                            {t.note?.includes("[YENİ]") && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 shrink-0">YENİ</span>
+                            )}
+                          </div>
+                          {t.note && !t.note.includes("[YENİ]") && <p className="text-xs text-gray-500 mt-0.5">{t.note}</p>}
+                          {t.note?.includes("[YENİ]") && t.note.replace("[YENİ]","").trim() && (
+                            <p className="text-xs text-gray-500 mt-0.5">{t.note.replace("[YENİ]","").trim()}</p>
+                          )}
                         </div>
                         {/* NEW görevler için öncelik değiştirme */}
                         {t.priority === "NEW" && (
