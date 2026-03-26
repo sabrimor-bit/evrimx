@@ -42,8 +42,11 @@ export async function sendToCliq(message: string): Promise<boolean> {
         body: JSON.stringify({ text: message }),
       }
     );
+    const data = await res.json();
+    console.log("Cliq response:", res.status, JSON.stringify(data));
     return res.ok;
-  } catch {
+  } catch(e) {
+    console.error("Cliq error:", e);
     return false;
   }
 }
