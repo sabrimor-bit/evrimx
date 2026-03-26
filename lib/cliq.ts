@@ -18,7 +18,7 @@ export async function sendToCliq(message: string): Promise<boolean> {
   try {
     const token = await getValidToken();
     const res = await fetch(
-      `https://cliq.zoho.com/company/717535685/api/v2/channelsbyname/${process.env.CLIQ_CHANNEL}/message`,
+      `https://cliq.zoho.com/api/v2/bots/haftalkplan/message`,
       {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
