@@ -1,8 +1,8 @@
 "use client";
+import { useEffect, useState, useRef } from "react";
 import { createClient } from "@/lib/supabase";
-import { DailyLog, Priority, Status, Task, Week } from "@/lib/types";
+import { Task, Week, DailyLog, Priority, Status } from "@/lib/types";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
 
 const PRIORITY_CFG: Record<string, { label: string; dot: string; badge: string }> = {
   P1: { label: "Kesinlikle bitir",   dot: "bg-red-500",     badge: "bg-red-950 text-red-300 border-red-800"         },
@@ -12,11 +12,14 @@ const PRIORITY_CFG: Record<string, { label: string; dot: string; badge: string }
 };
 
 const STATUS_CFG: Record<Status, { label: string; cls: string }> = {
-  Baslamadi:      { label: "Başlamadı",    cls: "bg-gray-800 text-gray-400"      },
-  "Devam Ediyor": { label: "Devam Ediyor", cls: "bg-indigo-950 text-indigo-300"  },
-  Tamamlandi:     { label: "Tamamlandı",   cls: "bg-emerald-950 text-emerald-300"},
-  Bloke:          { label: "Bloke",        cls: "bg-red-950 text-red-300"        },
+  Baslamadi:      { label: "Başlamadı",    cls: "bg-gray-800 text-gray-400"       },
+  "Devam Ediyor": { label: "Devam Ediyor", cls: "bg-indigo-950 text-indigo-300"   },
+  Tamamlandi:     { label: "Tamamlandı",   cls: "bg-emerald-950 text-emerald-300" },
+  Bloke:          { label: "Bloke",        cls: "bg-red-950 text-red-300"         },
 };
+
+type NextAction = "devret" | "askiya";
+interface NextTask { id: string; title: string; priority: string; note: string; action: NextAction; isNew?: boolean; }
 
 function weekLabel(d = new Date()) {
   const mon = new Date(d);
@@ -26,14 +29,23 @@ function weekLabel(d = new Date()) {
   const fmt = (x: Date) => `${String(x.getDate()).padStart(2,"0")}.${String(x.getMonth()+1).padStart(2,"0")}`;
   return `${fmt(mon)} - ${fmt(fri)}`;
 }
-
+function nextWeekLabel() {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  return weekLabel(d);
+}
+function nextMondayOf() {
+  const d = new Date();
+  const day = d.getDay();
+  d.setDate(d.getDate() - day + (day === 0 ? 1 : 8));
+  return d.toISOString().split("T")[0];
+}
 function mondayOf(d = new Date()) {
   const mon = new Date(d);
   const day = mon.getDay();
   mon.setDate(mon.getDate() - day + (day === 0 ? -6 : 1));
   return mon.toISOString().split("T")[0];
 }
-
 function todayLabel() {
   const d = new Date();
   const days = ["Paz","Pzt","Sal","Çar","Per","Cum","Cmt"];
@@ -55,6 +67,13 @@ export default function Dashboard() {
   const [logText, setLogText] = useState("");
   const [loading, setLoading] = useState(true);
   const logRef = useRef<HTMLTextAreaElement>(null);
+
+  // Cuma özeti — hafta kapatma akışı
+  const [summaryStep, setSummaryStep] = useState<"plan"|"preview">("plan");
+  const [nextTasks, setNextTasks] = useState<NextTask[]>([]);
+  const [nextNewTitle, setNextNewTitle] = useState("");
+  const [nextNewPriority, setNextNewPriority] = useState<Priority>("P1");
+  const [closing, setClosing] = useState(false);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -87,7 +106,20 @@ export default function Dashboard() {
     supabase.from("daily_logs").select("*").eq("week_id", activeWeekId).order("created_at", { ascending: false }).then(({ data }) => setLogs(data || []));
   }, [activeWeekId]);
 
-  // Textarea otomatik büyüme
+  // Cuma özeti sekmesine geçince nextTasks'ı hazırla
+  useEffect(() => {
+    if (view === "summary" && nextTasks.length === 0) {
+      const incomplete = tasks.filter(t => t.status !== "Tamamlandi");
+      setNextTasks(incomplete.map(t => ({
+        id: t.id, title: t.title,
+        priority: t.priority === "NEW" ? "P3" : t.priority,
+        note: (t.note || "").replace("[YENİ]","").trim(),
+        action: "devret" as NextAction,
+        isNew: false,
+      })));
+    }
+  }, [view, tasks]);
+
   const handleLogChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setLogText(e.target.value);
     if (logRef.current) {
@@ -98,20 +130,14 @@ export default function Dashboard() {
 
   const addTask = async () => {
     if (!newTitle.trim() || !activeWeekId) return;
-    // YENİ işaretliyse öncelik ne olursa olsun note'a [YENİ] ekle
-    // Sadece YENİ işaretli ama öncelik seçilmemişse priority = NEW
-    // YENİ + öncelik seçilmişse priority = seçilen, note = [YENİ]
-    const priority = newIsNew && newPriority === "P1" && !newPriority ? "NEW" : newPriority;
-    const note = newIsNew ? "[YENİ]" : "";
     const finalPriority = newIsNew && newPriority ? newPriority : (newIsNew ? "NEW" : newPriority);
-
+    const note = newIsNew ? "[YENİ]" : "";
     const { data } = await supabase.from("tasks").insert({
       week_id: activeWeekId, user_id: userId,
       title: newTitle.trim(), priority: finalPriority, status: "Baslamadi", note,
     }).select().single();
     if (data) setTasks(t => [...t, data]);
-    setNewTitle("");
-    setNewIsNew(false);
+    setNewTitle(""); setNewIsNew(false);
   };
 
   const updateStatus = async (id: string, status: Status) => {
@@ -122,7 +148,6 @@ export default function Dashboard() {
   const updatePriority = async (id: string, priority: string) => {
     const task = tasks.find(t => t.id === id);
     if (!task) return;
-    // Öncelik atanınca YENİ etiketini note'a ekle, priority'yi güncelle
     const note = task.note?.includes("[YENİ]") ? task.note : (task.note ? task.note + " [YENİ]" : "[YENİ]");
     await supabase.from("tasks").update({ priority, note }).eq("id", id);
     setTasks(t => t.map(x => x.id === id ? { ...x, priority: priority as Priority, note } : x));
@@ -143,86 +168,71 @@ export default function Dashboard() {
     if (logRef.current) logRef.current.style.height = "96px";
   };
 
-  const newWeek = async () => {
-    const { data } = await supabase.from("weeks").insert({
-      user_id: userId, label: weekLabel(), start_date: mondayOf(),
-    }).select().single();
-    if (data) { setWeeks(w => [data, ...w]); setActiveWeekId(data.id); }
-  };
-
-  // Devir: NEW görevler seçilen önceliğe taşınır
-  const carryOver = async () => {
-    if (!activeWeekId) return;
-    const incomplete = tasks.filter(t => t.status !== "Tamamlandi");
-    const { data: newWeekData } = await supabase.from("weeks").insert({
-      user_id: userId, label: weekLabel(), start_date: mondayOf(),
-    }).select().single();
-    if (!newWeekData) return;
-
-    for (const t of incomplete) {
-      // YENİ etiketini kaldır, öncelik atanmamışsa P3 yap
-      const cleanNote = (t.note || "").replace("[YENİ]","").trim();
-      const priority = t.priority === "NEW" ? "P3" : t.priority;
-      await supabase.from("tasks").insert({
-        week_id: newWeekData.id,
-        user_id: userId,
-        title: t.title,
-        priority,
-        status: "Baslamadi",
-        note: cleanNote ? `[Devir] ${cleanNote}` : "[Devir]",
-      });
-    }
-    setWeeks(w => [newWeekData, ...w]);
-    setActiveWeekId(newWeekData.id);
-    setTasks([]);
+  const addNextTask = () => {
+    if (!nextNewTitle.trim()) return;
+    setNextTasks(t => [...t, {
+      id: "new_" + Date.now(), title: nextNewTitle.trim(),
+      priority: nextNewPriority, note: "", action: "devret", isNew: true,
+    }]);
+    setNextNewTitle("");
   };
 
   const buildSummary = () => {
-    const lines: string[] = ["Selamlar,", "", `Bu haftanın planları (${weeks.find(w => w.id === activeWeekId)?.label}):`, ""];
+    const activeWeek = weeks.find(w => w.id === activeWeekId);
+    const lines: string[] = ["Selamlar,", "", `Bu haftanın planları (${activeWeek?.label}):`, ""];
 
-    // Planlı görevler (NEW olmayanlar)
     (["P1","P2","P3"] as Priority[]).forEach(p => {
       tasks.filter(t => t.priority === p && !t.note?.includes("[YENİ]")).forEach(t => {
         const s = t.status === "Tamamlandi" ? "TAMAMLANDI" : STATUS_CFG[t.status].label;
-        lines.push(`${t.priority} - ${t.title} (${s}${t.note ? " - " + t.note : ""})`);
+        lines.push(`${p} - ${t.title} (${s})`);
       });
     });
 
-    // Hafta içi eklenen NEW görevler — durum bilgisiyle
-    const newT = tasks.filter(t => t.priority === "NEW");
-    // Ayrıca öncelik atanmış ama YENİ etiketli görevler
-    const newTagged = tasks.filter(t => t.priority !== "NEW" && t.note?.includes("[YENİ]"));
-    const allNew = [...newT, ...newTagged];
-
-    if (allNew.length) {
+    const newTagged = tasks.filter(t => t.priority === "NEW" || t.note?.includes("[YENİ]"));
+    if (newTagged.length) {
       lines.push("", "Hafta içi eklenen:");
-      allNew.forEach(t => {
+      newTagged.forEach(t => {
         const s = t.status === "Tamamlandi" ? "TAMAMLANDI" : STATUS_CFG[t.status].label;
         lines.push(`YENİ - ${t.title} (${s})`);
       });
     }
 
-    // Haftaya: tamamlanmamışlar — NEW olanlar artık öncelik ile listelenir
-    const incomplete = tasks.filter(t => t.status !== "Tamamlandi");
-    if (incomplete.length) {
-      lines.push("", "Haftaya:");
-      (["P1","P2","P3"] as Priority[]).forEach(p => {
-        // Normal görevler
-        incomplete.filter(t => t.priority === p && !t.note?.includes("[YENİ]")).forEach(t => {
-          lines.push(`${p} - ${t.title}`);
+    const devredilenler = nextTasks.filter(t => t.action === "devret");
+    if (devredilenler.length) {
+      lines.push("", `Haftaya (${nextWeekLabel()}):`);
+      (["P1","P2","P3","NEW"]).forEach(p => {
+        devredilenler.filter(t => t.priority === p).forEach(t => {
+          lines.push(`${t.priority} - ${t.title}${t.isNew ? " [YENİ PLAN]" : ""}`);
         });
-        // YENİ etiketliler ama bu öncelikte olanlar
-        incomplete.filter(t => t.priority === p && t.note?.includes("[YENİ]")).forEach(t => {
-          lines.push(`${p} - ${t.title}`);
-        });
-      });
-      // Öncelik atanmamış NEW'ler
-      incomplete.filter(t => t.priority === "NEW").forEach(t => {
-        lines.push(`NEW - ${t.title}`);
       });
     }
 
     return lines.join("\n");
+  };
+
+  const closeWeekAndCreateNext = async () => {
+    setClosing(true);
+    const { data: newWeekData } = await supabase.from("weeks").insert({
+      user_id: userId, label: nextWeekLabel(), start_date: nextMondayOf(),
+    }).select().single();
+    if (!newWeekData) { setClosing(false); return; }
+
+    for (const t of nextTasks.filter(t => t.action === "devret")) {
+      await supabase.from("tasks").insert({
+        week_id: newWeekData.id, user_id: userId,
+        title: t.title, priority: t.priority,
+        status: "Baslamadi",
+        note: t.isNew ? "" : (t.note ? `[Devir] ${t.note}` : "[Devir]"),
+      });
+    }
+
+    setWeeks(w => [newWeekData, ...w]);
+    setActiveWeekId(newWeekData.id);
+    setTasks([]);
+    setNextTasks([]);
+    setSummaryStep("plan");
+    setView("tasks");
+    setClosing(false);
   };
 
   const sendToCliq = async (message: string) => {
@@ -231,9 +241,7 @@ export default function Dashboard() {
   };
 
   if (loading) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-500 text-sm">
-      Yükleniyor...
-    </div>
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-500 text-sm">Yükleniyor...</div>
   );
 
   const activeWeek = weeks.find(w => w.id === activeWeekId);
@@ -253,15 +261,12 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => router.push("/team")} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition">Ekip</button>
-            <button onClick={carryOver} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition">Devret + Yeni Hafta</button>
-            <button onClick={newWeek} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition">Boş Yeni Hafta</button>
             <button onClick={() => supabase.auth.signOut().then(() => router.push("/"))} className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-500 hover:text-gray-300 transition">Çıkış</button>
           </div>
         </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 py-6">
-        {/* Hafta seçici */}
         {weeks.length > 1 && (
           <div className="flex gap-2 mb-5 flex-wrap">
             {weeks.map((w, i) => (
@@ -273,7 +278,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Progress kartı */}
+        {/* Progress */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium text-gray-300">Bu haftaki ilerleme</span>
@@ -339,7 +344,6 @@ export default function Dashboard() {
                             <p className="text-xs text-gray-500 mt-0.5">{t.note.replace("[YENİ]","").trim()}</p>
                           )}
                         </div>
-                        {/* NEW görevler için öncelik değiştirme */}
                         {t.priority === "NEW" && (
                           <select value={t.priority} onChange={e => updatePriority(t.id, e.target.value)}
                             className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer bg-indigo-950 text-indigo-300">
@@ -361,7 +365,6 @@ export default function Dashboard() {
               );
             })}
 
-            {/* Görev ekle */}
             <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 mt-4">
               <div className="flex gap-2 mb-3">
                 <input value={newTitle} onChange={e => setNewTitle(e.target.value)} onKeyDown={e => e.key === "Enter" && addTask()}
@@ -392,23 +395,13 @@ export default function Dashboard() {
         {view === "daily" && (
           <div>
             <div className="mb-6">
-              <textarea
-                ref={logRef}
-                value={logText}
-                onChange={handleLogChange}
+              <textarea ref={logRef} value={logText} onChange={handleLogChange}
                 placeholder="Bugün ne yaptın? Yarın ne planlıyorsun?..."
                 className="w-full bg-gray-900 border border-gray-700 focus:border-indigo-500 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-600 outline-none resize-none transition overflow-hidden"
-                style={{ minHeight: "96px" }}
-              />
+                style={{ minHeight: "96px" }} />
               <div className="flex gap-3 mt-3">
-                <button onClick={addLog}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl px-5 py-2.5 text-sm font-medium transition">
-                  Kaydet
-                </button>
-                <button onClick={() => sendToCliq(logText)}
-                  className="border border-gray-700 hover:border-gray-600 text-gray-400 hover:text-gray-200 rounded-xl px-5 py-2.5 text-sm transition">
-                  Cliq'e Gönder
-                </button>
+                <button onClick={addLog} className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl px-5 py-2.5 text-sm font-medium transition">Kaydet</button>
+                <button onClick={() => sendToCliq(logText)} className="border border-gray-700 hover:border-gray-600 text-gray-400 hover:text-gray-200 rounded-xl px-5 py-2.5 text-sm transition">Cliq'e Gönder</button>
               </div>
             </div>
             {logs.length === 0 && <p className="text-sm text-gray-700 italic">Henüz log yok</p>}
@@ -424,19 +417,108 @@ export default function Dashboard() {
         {/* CUMA ÖZETİ */}
         {view === "summary" && (
           <div>
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 mb-4">
-              <pre className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed font-mono">{buildSummary()}</pre>
+            {/* Step indikatör */}
+            <div className="flex gap-2 mb-6">
+              {["Sonraki Haftayı Planla", "Özet & Gönder"].map((s, i) => (
+                <div key={i} className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg border transition cursor-pointer ${summaryStep === (i === 0 ? "plan" : "preview") ? "bg-indigo-600 border-indigo-600 text-white" : "border-gray-700 text-gray-500"}`}
+                  onClick={() => setSummaryStep(i === 0 ? "plan" : "preview")}>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold ${summaryStep === (i === 0 ? "plan" : "preview") ? "bg-white text-indigo-600" : "bg-gray-700 text-gray-400"}`}>{i+1}</span>
+                  {s}
+                </div>
+              ))}
             </div>
-            <div className="flex gap-3">
-              <button onClick={() => navigator.clipboard.writeText(buildSummary())}
-                className="flex-1 border border-gray-700 hover:border-gray-600 text-gray-400 hover:text-gray-200 rounded-xl py-3 text-sm transition">
-                Kopyala
-              </button>
-              <button onClick={() => sendToCliq(buildSummary())}
-                className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl py-3 text-sm font-medium transition">
-                Cliq'e Gönder
-              </button>
-            </div>
+
+            {/* ADIM 1: Sonraki haftayı planla */}
+            {summaryStep === "plan" && (
+              <div>
+                <p className="text-xs text-gray-500 mb-4">Tamamlanmamış görevleri sonraki haftaya devret veya askıya al. Yeni görevler ekle.</p>
+
+                {nextTasks.length === 0 && (
+                  <p className="text-sm text-gray-600 italic mb-4">Tüm görevler tamamlandı! 🎉</p>
+                )}
+
+                {nextTasks.map((t, idx) => (
+                  <div key={t.id} className={`flex items-center gap-3 rounded-xl px-4 py-3 mb-2 border ${t.action === "askiya" ? "bg-gray-900 border-gray-800 opacity-50" : "bg-gray-900 border-gray-800"}`}>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className={`text-sm ${t.action === "askiya" ? "line-through text-gray-600" : "text-gray-100"}`}>{t.title}</p>
+                        {t.isNew && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">YENİ PLAN</span>}
+                      </div>
+                    </div>
+                    <select value={t.priority} onChange={e => setNextTasks(nt => nt.map((x,i) => i===idx ? {...x, priority: e.target.value} : x))}
+                      className={`text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer ${PRIORITY_CFG[t.priority]?.badge || "bg-gray-800 text-gray-400"}`}>
+                      <option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option>
+                    </select>
+                    <div className="flex gap-1">
+                      <button onClick={() => setNextTasks(nt => nt.map((x,i) => i===idx ? {...x, action:"devret"} : x))}
+                        className={`text-xs px-2.5 py-1 rounded-lg border transition ${t.action === "devret" ? "bg-indigo-600 border-indigo-600 text-white" : "border-gray-700 text-gray-500 hover:text-gray-300"}`}>
+                        Devret
+                      </button>
+                      <button onClick={() => setNextTasks(nt => nt.map((x,i) => i===idx ? {...x, action:"askiya"} : x))}
+                        className={`text-xs px-2.5 py-1 rounded-lg border transition ${t.action === "askiya" ? "bg-amber-900 border-amber-700 text-amber-300" : "border-gray-700 text-gray-500 hover:text-gray-300"}`}>
+                        Askıya Al
+                      </button>
+                      {t.isNew && (
+                        <button onClick={() => setNextTasks(nt => nt.filter((_,i) => i!==idx))}
+                          className="text-xs px-2 py-1 rounded-lg border border-gray-700 text-gray-600 hover:text-red-400 transition">✕</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Yeni görev ekle (sonraki hafta için) */}
+                <div className="bg-gray-900 border border-dashed border-gray-700 rounded-xl p-4 mt-4">
+                  <p className="text-xs text-gray-500 mb-3">Sonraki hafta için yeni görev ekle</p>
+                  <div className="flex gap-2 mb-3">
+                    <input value={nextNewTitle} onChange={e => setNextNewTitle(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && addNextTask()}
+                      placeholder="Yeni görev..."
+                      className="flex-1 bg-gray-800 border border-gray-700 focus:border-indigo-500 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none transition" />
+                    <button onClick={addNextTask} className="bg-gray-700 hover:bg-gray-600 text-white rounded-lg px-4 text-sm transition">Ekle</button>
+                  </div>
+                  <div className="flex gap-2">
+                    {(["P1","P2","P3"] as Priority[]).map(p => (
+                      <button key={p} onClick={() => setNextNewPriority(p)}
+                        className={`text-xs px-2.5 py-1 rounded-lg border transition ${nextNewPriority === p ? PRIORITY_CFG[p].badge : "border-gray-700 text-gray-500 hover:text-gray-300"}`}>
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button onClick={() => setSummaryStep("preview")}
+                  className="w-full mt-5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl py-3 text-sm font-medium transition">
+                  Özeti Görüntüle →
+                </button>
+              </div>
+            )}
+
+            {/* ADIM 2: Özet & Gönder */}
+            {summaryStep === "preview" && (
+              <div>
+                <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 mb-4">
+                  <pre className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed font-mono">{buildSummary()}</pre>
+                </div>
+                <div className="flex gap-3 mb-4">
+                  <button onClick={() => navigator.clipboard.writeText(buildSummary())}
+                    className="flex-1 border border-gray-700 hover:border-gray-600 text-gray-400 hover:text-gray-200 rounded-xl py-3 text-sm transition">
+                    Kopyala
+                  </button>
+                  <button onClick={() => sendToCliq(buildSummary())}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl py-3 text-sm font-medium transition">
+                    Cliq'e Gönder
+                  </button>
+                </div>
+                <button onClick={closeWeekAndCreateNext} disabled={closing}
+                  className="w-full bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-xl py-3 text-sm font-semibold transition">
+                  {closing ? "Oluşturuluyor..." : "✓ Onayla & Sonraki Haftayı Oluştur"}
+                </button>
+                <p className="text-xs text-gray-600 text-center mt-2">
+                  Devret seçili {nextTasks.filter(t=>t.action==="devret").length} görev sonraki haftaya taşınacak.
+                  {nextTasks.filter(t=>t.action==="askiya").length > 0 && ` ${nextTasks.filter(t=>t.action==="askiya").length} görev askıya alınacak.`}
+                </text>
+              </div>
+            )}
           </div>
         )}
       </div>
