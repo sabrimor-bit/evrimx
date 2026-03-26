@@ -1,0 +1,6 @@
+{
+  "crons": [
+    { "path": "/api/cliq-reminder", "schedule": "0 7 * * 4" },
+    { "path": "/api/cliq-reminder", "schedule": "0 7 * * 5" }
+  ]
+}
