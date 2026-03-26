@@ -21,26 +21,6 @@ const STATUS_CFG: Record<Status, { label: string; cls: string }> = {
   Bloke:          { label: "Bloke",        cls: "bg-red-950 text-red-300"     },
 };
 
-function weekLabel(d = new Date()) {
-  const mon = new Date(d);
-  const day = mon.getDay();
-  mon.setDate(mon.getDate() - day + (day === 0 ? -6 : 1));
-  const fri = new Date(mon); fri.setDate(mon.getDate() + 4);
-  const fmt = (x: Date) => `${String(x.getDate()).padStart(2,"0")}.${String(x.getMonth()+1).padStart(2,"0")}`;
-  return `${fmt(mon)} - ${fmt(fri)}`;
-}
-function mondayOf(d = new Date()) {
-  const mon = new Date(d);
-  const day = mon.getDay();
-  mon.setDate(mon.getDate() - day + (day === 0 ? -6 : 1));
-  return mon.toISOString().split("T")[0];
-}
-function todayLabel() {
-  const d = new Date();
-  const days = ["Paz","Pzt","Sal","Çar","Per","Cum","Cmt"];
-  return `${days[d.getDay()]} ${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")}`;
-}
-
 export default function Dashboard() {
   const supabase = createClient();
   const router = useRouter();
